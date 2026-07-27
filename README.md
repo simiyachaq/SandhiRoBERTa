@@ -140,3 +140,233 @@ SandhiRoBERTa/
 - The raw Sanskrit corpus is derived from the Kaggle dataset by Preet Sojitra, originally compiled by Kartik Bhatnagar.
 - The Vedic treebank is from Universal Dependencies (UD_Sanskrit‑Vedic).
 - The project structure and the two‑phase strategy are directly informed by the Shan RoBERTa project, which tackled analogous problems for a low‑resource isolating language.
+
+- # SandhiRoBERTa — Update, ápa annotation & construction grammar study
+
+## 1. Current status (2026‑07‑27)
+
+### 1.1 Pre‑training (Phase 1)
+The pre‑training of SandhiRoBERTa is still running on the free tier of Google Colab.
+Frequent disconnections limit the throughput to three or four epochs per day.
+Training is resumed from a checkpoint saved at global step 60 000 (epoch 2,
+step‑in‑epoch 39436).
+
+After five epochs the loss values are:
+
+| Epoch | Average MLM loss |
+|-------|------------------|
+| 1     | 2.05 (approx.)   |
+| 2     | 1.45 (approx.)   |
+| 3     | 0.2744           |
+| 4     | 0.2686           |
+| 5     | 0.2571           |
+
+The loss is still decreasing steadily. Pre‑training will continue until epoch 30
+or until the loss plateaus.
+
+### 1.2 Fine‑tuning data (Phase 2)
+The fine‑tuning TSV (`finetune_features.tsv`) has been generated from the
+UD Sanskrit‑Vedic treebank (`sa_vedic-ud-train.conllu`). The tokeniser now
+writes two extra columns — `oracion` (full sentence in IAST) and `token`
+(the word form in IAST) — in addition to the feature channels and the
+morphological/dependency labels.
+
+### 1.3 Ápa construction extraction (Phase 3 preparation)
+A dedicated script (`prepare_apa_annotation.py`) extracted 448 occurrences
+of the particle *ápa* (independent or prefixed) from the fine‑tuning corpus.
+After manual annotation these instances will be used to test the hierarchy of
+metaforicity proposed by Danesi (2013).
+
+---
+
+## 2. Corpus sizes (verified)
+
+| File | Lines | Tokens / rows |
+|------|-------|---------------|
+| `train.txt` | 2,619,941 sentences | — |
+| `sandhi_features.tsv` | — | 215,743,601 phoneme tokens |
+| `sa_vedic-ud-train.conllu` | 21,477 sentences | — |
+| `finetune_features.tsv` | — | 884,826 phoneme rows |
+
+All numbers have been verified with `wc -l` and `awk` on the original files.
+
+---
+
+## 3. Pre‑training details
+
+- **Architecture:** RoBERTa‑style, 6 layers, 8 attention heads, hidden size 384,
+  intermediate size 1536. About 12 M parameters.
+- **Embedding:** MultiStreamEmbedding (five independent channels: place, manner,
+  sonority, word boundary, syllable onset). Each channel uses its own embedding
+  table (dim 32); the five vectors are concatenated and projected to 384.
+- **Masking:** per‑channel masking (15 % probability, 80‑10‑10 rule), applied
+  independently to each channel. The mask token is the last index in each
+  channel’s vocabulary.
+- **Optimisation:** AdamW, learning rate 3e‑4, weight decay 0.1, cosine schedule
+  with 2000 warm‑up steps, mixed precision (AMP), batch size 64 with gradient
+  accumulation (effective 128).
+- **Hardware:** single NVIDIA T4 GPU (Google Colab free tier).
+- **Resumption:** checkpoint saved every 2000 steps. Training can be resumed
+  exactly from the saved state.
+
+Because of Colab disconnections, the total wall‑clock time per epoch is
+variable, but each epoch takes roughly 55–70 minutes of GPU time.
+
+---
+
+## 4. Fine‑tuning data preparation
+
+### 4.1 Tokeniser adjustments
+The script `conllu_to_features.py` now adds three columns to the output TSV:
+
+| Column | Content |
+|--------|---------|
+| `oracion` | Full sentence in IAST transliteration |
+| `token`   | Surface form of the current word (IAST) |
+| `lemma`   | Lemma of the current word (from the CoNLL‑U) |
+
+Morphological and dependency labels are still repeated on every phoneme of a
+word, so that any word can be isolated without reference to word‑boundary
+tokenisation.
+
+### 4.2 Sentence count
+The CoNLL‑U file contains exactly 21,477 sentences (verified with
+`awk 'BEGIN{RS="";ORS=""} NF>0 {n++} END{print n}'`). After tokenisation
+the TSV has 884,826 data rows (plus one header row).
+
+---
+
+## 5. Extraction of *ápa* constructions
+
+### 5.1 The particle *ápa* in the treebank
+In the UD Sanskrit‑Vedic treebank the particle appears without accent
+(`apa`). It occurs as an independent word (adverb/particle) or as a
+preverb attached to a verb (`apagacchati`, `apāvṛṇot`, etc.).
+
+### 5.2 Extraction script
+`prepare_apa_annotation.py` reads `finetune_features.tsv` and keeps only
+words that match one of two patterns:
+
+1. **Independent particle:** the token string is exactly `apa`.
+2. **Attached preverb:** the token string starts with `ap`, is longer than
+   two characters, and the row satisfies `is_verb_row()` (no Case/Gender,
+   at least one of Person/Tense/Mood/VerbForm not empty).
+
+For each matching word only the first phoneme is kept (word‑boundary label
+`B` or `E`), so that each word appears exactly once in the output.
+
+### 5.3 Removal of false positives
+The string `ap` may appear for reasons unrelated to the preverb *ápa*.
+Three filters are applied:
+
+- **Prefix `api`:** if the token contains `api` and the lemma does not
+  contain `apa`, the token is discarded (removes `apiyanti` etc.).
+- **Past‑tense augment:** if the tense is `Past` or `Impf`, the token does
+  **not** contain the long vowel `āp` (fusion of augment + *apa*), and the
+  lemma does not contain `ap`, the token is discarded. This removes forms
+  like `apaśyan` (augment + `paś`) and `apibadhnīta` (augment + `bandh`
+  with prefix `api`).
+- **Lemma filter (negative only):** lemmas are **not** required to start
+  with `apa` or `āpa`, because many genuine *ápa* compounds have a bare
+  root as their lemma (e.g., `apāvṛṇot` has lemma `vṛ`). The lemma is only
+  used to exclude the false positives described above.
+
+After filtering, the output file `corpora/apa_annotation.tsv` contains
+**448 occurrences** of the particle *ápa*.
+
+---
+
+## 6. Annotation scheme
+
+The file `apa_annotation.tsv` contains the following columns. The first
+four are filled automatically; the remaining ones are to be filled manually.
+
+| Column | Content | Source |
+|--------|---------|--------|
+| `sent_id` | Sentence identifier | automatic |
+| `token_id` | Phoneme index of the first phoneme of the *ápa* word | automatic |
+| `token_form` | Surface form of the word (IAST) | automatic |
+| `full_sentence` | Full sentence in IAST | automatic |
+| `verb_token_id` | Word index of the associated verb (to be mapped later) | manual |
+| `verb_form` | Verb form in IAST | manual |
+| `tmesis` | `unida` (united) or `separada` (separated) | manual |
+| `nivel_metaforicidad` | 1–4 following Danesi’s hierarchy | manual |
+| `clase_semantica` | `movimiento`, `emisión`, `cambio_estado`, `idiomático` | manual |
+| `notas` | Free notes (e.g., verb never occurs without *ápa*) | manual |
+
+### 6.1 Hierarchy of metaforicity (Danesi 2013)
+
+1. **Concrete motion:** the verb expresses displacement; the particle adds
+   the final trajectory of physical disappearance (*apehi* “go away”,
+   *apagacchati* “goes away”).
+2. **Emission / motion with result:** the verb denotes emission of a
+   substance or a bodily process; with *ápa* it causes something to move
+   away or disappear (*apāvāt* “blows away”, *apāniti* “exhales”).
+3. **Change of state with elimination:** the verb denotes a change of state
+   (burning, breaking, striking); the particle adds complete elimination
+   of the patient (*apādahat* “burns away”, *apahanti* “destroys”).
+4. **Idiomatic / semantic inversion:** the meaning is non‑compositional,
+   often the opposite of the base verb (*apāvṛṇu* “opens”, lit. “un‑covers”).
+
+The column `clase_semantica` groups the levels into broader labels:
+`movimiento` (level 1), `emisión` (level 2), `cambio_estado` (level 3),
+`idiomático` (level 4).
+
+---
+
+## 7. Research plan: testing Danesi’s hierarchy with SandhiRoBERTa
+
+### 7.1 Theoretical framework
+Danesi (2013) proposes that Vedic particle‑verb combinations with *ápa*
+form constructions that range from productive compositional patterns to
+fully lexicalised units. The core meaning is “disappearance through
+movement away”, and the combinations can be ordered along a hierarchy of
+metaforicity.
+
+### 7.2 Aim
+To test whether the internal representations of SandhiRoBERTa encode this
+hierarchy, even though the model was never given explicit semantic labels
+for *ápa*.
+
+### 7.3 Operationalised hypotheses
+
+1. **Cosine distance increase.** The cosine distance between the contextual
+   representation of a verb used without *ápa* and the same verb used in
+   the *ápa* construction should increase with the level of metaforicity.
+2. **Gradient in embedding space.** A projection (t‑SNE/UMAP) of the
+   construction representations should show a gradual transition from
+   motion to idiomatic instances, with overlap between adjacent levels.
+3. **Linear decodability.** A linear classifier trained on the construction
+   representations should predict the metaforicity level above chance, and
+   its confusion matrix should concentrate errors on adjacent levels.
+4. **Particle predictability (PLL).** When the phonemes of *ápa* are masked,
+   the pseudo‑log‑likelihood of the correct sequence should be higher for
+   compositional constructions (levels 1‑2) than for idiomatic ones
+   (levels 3‑4).
+5. **Tmesis sensitivity.** The cosine similarity between united and separated
+   variants of the same construction should be high at all levels if
+   position does not affect semantics (Danesi 2013). Lower similarity at
+   high levels would suggest incipient univerbation.
+
+### 7.4 Procedure
+1. Complete manual annotation of the 448 instances.
+2. Map word identifiers to exact phoneme indices in `finetune_features.tsv`.
+3. Extract encoder vectors for the particle, the verb, and the whole
+   construction, both in original context and with the particle masked.
+4. Compute distances, PLL values, and intra‑construction similarities.
+5. Train linear probes to classify the metaforicity level and evaluate
+   statistical significance.
+6. Interpret the results with respect to the hierarchy and the distinction
+   between productive coercion and lexicalisation.
+
+---
+
+## 8. Next steps
+
+- Finish manual annotation of `apa_annotation.tsv`.
+- Write a script that maps word IDs to phoneme indices.
+- Run the frozen encoder on the relevant sentences and store the vectors.
+- Carry out the five planned experiments.
+- Write the paper.
+
+The pre‑training will continue in the background until epoch 30.
