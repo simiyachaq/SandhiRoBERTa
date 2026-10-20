@@ -85,10 +85,6 @@ During training, only the heads are updated. The loss is the sum of cross‑entr
 
 
 
-## Construction grammar perspective
-
-The architecture supports descriptive work in the framework of Construction Grammar (CxG). Because the model operates on sub‑phonemic features and learns to predict morphological and syntactic labels directly from surface forms, it can serve as a tool for inducing a constructicon from annotated data. The frozen encoder provides phonologically regularised word representations that abstract away from sandhi alternations; clustering these representations groups words by their constructional properties rather than by lexicographic convention. The approach is designed to capture form‑meaning pairings — including particle‑verb combinations, possessive expressions, and case‑marked argument structures — without resorting to traditional Pāṇinian derivational categories.
-
 ## Project structure
 
 ```
